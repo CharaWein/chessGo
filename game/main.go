@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"embed"
-	_ "embed"
+	"fmt"
 	"image"
 	"image/color"
 	"log"
+
+	"chessGo/bots"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
@@ -37,6 +39,13 @@ type Game struct {
 	botThinking  bool
 	boardOffsetX int
 	boardOffsetY int
+	bots         map[string]bots.ChessBot
+	currentBot   bots.ChessBot
+}
+
+type ChessBot interface {
+	BestMove(game *chess.Game) *chess.Move
+	Name() string
 }
 
 func NewGame() *Game {
@@ -56,7 +65,12 @@ func NewGame() *Game {
 		pieces:       make(map[chess.Piece]*ebiten.Image),
 		boardOffsetX: (screenWidth - boardWidth) / 2,
 		boardOffsetY: (screenHeight - boardHeight) / 2,
+		bots:         make(map[string]bots.ChessBot),
 	}
+	g.bots["random"] = bots.NewRandomBot()
+
+	g.currentBot = g.bots["random"] // Бот по умолчанию
+
 	g.loadPieceImages()
 	return g
 }
@@ -170,9 +184,11 @@ func (g *Game) startGame() {
 }
 
 func (g *Game) makeBotMove() {
-	moves := g.chessGame.ValidMoves()
-	if len(moves) > 0 {
-		g.chessGame.Move(moves[0])
+	if g.currentBot != nil {
+		move := g.currentBot.BestMove(g.chessGame)
+		if move != nil {
+			g.chessGame.Move(move)
+		}
 	}
 	g.botThinking = false
 }
@@ -187,6 +203,30 @@ func findMove(game *chess.Game, from, to chess.Square) *chess.Move {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
+	// Отображение текущего бота
+	botInfo := fmt.Sprintf("Бот: %s", g.currentBot.Name())
+	ebitenutil.DebugPrintAt(screen, botInfo, screenWidth-200, 20)
+
+	// Кнопка смены бота (при клике)
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+		x, y := ebiten.CursorPosition()
+		if x > screenWidth-200 && x < screenWidth-20 && y > 20 && y < 50 {
+			// Циклически меняем ботов
+			botsList := []string{"random", "minimax3", "minimax5"}
+			current := ""
+			for i, name := range botsList {
+				if g.currentBot.Name() == g.bots[name].Name() {
+					current = botsList[(i+1)%len(botsList)]
+					break
+				}
+			}
+			if current == "" {
+				current = botsList[0]
+			}
+			g.currentBot = g.bots[current]
+		}
+	}
+
 	if !g.gameStarted {
 		// Экран выбора цвета
 		ebitenutil.DebugPrintAt(screen, "Шахматы на Go", screenWidth/2-70, screenHeight/2-50)
