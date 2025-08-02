@@ -1,155 +1,289 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
-	"os"
-	"strings"
+	"bytes"
+	"embed"
+	_ "embed"
+	"image"
+	"image/color"
+	"log"
 
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/notnil/chess"
 )
 
-type ChessBot struct {
-	depth int
+// Размеры фигур (160x160)
+const pieceSize = 160
+
+var (
+	screenWidth  int
+	screenHeight int
+	squareSize   int
+)
+
+//go:embed assets/*
+var assets embed.FS
+
+type Game struct {
+	chessGame    *chess.Game
+	pieces       map[chess.Piece]*ebiten.Image
+	selected     chess.Square
+	dragging     *chess.Piece
+	dragX, dragY int
+	playerColor  chess.Color
+	gameStarted  bool
+	botThinking  bool
+	boardOffsetX int
+	boardOffsetY int
 }
 
-func NewChessBot(depth int) *ChessBot {
-	return &ChessBot{depth: depth}
-}
+func NewGame() *Game {
+	// Получаем размеры экрана
+	screenWidth, screenHeight = ebiten.ScreenSizeInFullscreen()
 
-func (bot *ChessBot) BestMove(game *chess.Game) *chess.Move {
-	validMoves := game.ValidMoves()
-	if len(validMoves) == 0 {
-		return nil
+	// Вычисляем размер клетки (оставляем место для информации сверху)
+	boardHeight := screenHeight - 80
+	squareSize = boardHeight / 8
+	if screenWidth/8 < squareSize {
+		squareSize = screenWidth / 8
 	}
-	return validMoves[0] // Простой бот - просто берет первый доступный ход
+
+	// Центрируем доску
+	boardWidth := squareSize * 8
+	g := &Game{
+		pieces:       make(map[chess.Piece]*ebiten.Image),
+		boardOffsetX: (screenWidth - boardWidth) / 2,
+		boardOffsetY: (screenHeight - boardHeight) / 2,
+	}
+	g.loadPieceImages()
+	return g
 }
 
-func printBoard(game *chess.Game) {
-	fmt.Println("\n   a b c d e f g h")
-	fmt.Println("  +-----------------+")
+func (g *Game) loadPieceImages() {
+	pieceAssets := map[chess.Piece]string{
+		chess.WhiteKing:   "white_king.png",
+		chess.WhiteQueen:  "white_queen.png",
+		chess.WhiteRook:   "white_rook.png",
+		chess.WhiteBishop: "white_bishop.png",
+		chess.WhiteKnight: "white_knight.png",
+		chess.WhitePawn:   "white_pawn.png",
+		chess.BlackKing:   "black_king.png",
+		chess.BlackQueen:  "black_queen.png",
+		chess.BlackRook:   "black_rook.png",
+		chess.BlackBishop: "black_bishop.png",
+		chess.BlackKnight: "black_knight.png",
+		chess.BlackPawn:   "black_pawn.png",
+	}
 
-	board := game.Position().Board()
-	for rank := 7; rank >= 0; rank-- {
-		fmt.Printf("%d | ", rank+1)
-		for file := 0; file < 8; file++ {
-			square := chess.Square(file + rank*8)
-			piece := board.Piece(square)
-			if piece == chess.NoPiece {
-				fmt.Print(". ")
-			} else {
-				fmt.Printf("%s ", piece.String())
+	for piece, filename := range pieceAssets {
+		data, err := assets.ReadFile("assets/" + filename)
+		if err != nil {
+			log.Fatalf("Failed to load image %s: %v", filename, err)
+		}
+
+		img, _, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			log.Fatalf("Failed to decode image %s: %v", filename, err)
+		}
+
+		// Масштабируем изображение под размер клетки
+		scaledImg := ebiten.NewImage(squareSize, squareSize)
+		op := &ebiten.DrawImageOptions{}
+		scale := float64(squareSize) / float64(pieceSize)
+		op.GeoM.Scale(scale, scale)
+		scaledImg.DrawImage(ebiten.NewImageFromImage(img), op)
+		g.pieces[piece] = scaledImg
+	}
+}
+
+func (g *Game) Update() error {
+	if !g.gameStarted {
+		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+			x, y := ebiten.CursorPosition()
+			btnWidth := 200
+			btnHeight := 60
+			btnY := screenHeight/2 + 100
+
+			if y > btnY && y < btnY+btnHeight {
+				if x > screenWidth/2-btnWidth-20 && x < screenWidth/2-btnWidth-20+btnWidth {
+					g.playerColor = chess.White
+					g.startGame()
+				} else if x > screenWidth/2+20 && x < screenWidth/2+20+btnWidth {
+					g.playerColor = chess.Black
+					g.startGame()
+				}
 			}
 		}
-		fmt.Printf("| %d\n", rank+1)
-	}
-
-	fmt.Println("  +-----------------+")
-	fmt.Println("   a b c d e f g h\n")
-}
-
-func main() {
-	game := chess.NewGame()
-	bot := NewChessBot(3)
-	scanner := bufio.NewScanner(os.Stdin)
-
-	fmt.Println("Шахматный бот на Go")
-	fmt.Println("Введите ход (например: e4, Nf3, Bxc4, O-O) или 'quit' для выхода")
-
-	for game.Outcome() == chess.NoOutcome {
-		printBoard(game)
-
-		if game.Position().Turn() == chess.White {
-			fmt.Print("Ваш ход (белые): ")
-			scanner.Scan()
-			input := strings.TrimSpace(scanner.Text())
-
-			if input == "quit" {
-				return
-			}
-
-			// Пробуем разные варианты нотации
-			var move *chess.Move
-			var err error
-
-			// 1. Сначала пробуем стандартную нотацию (Bxf7)
-			move, err = chess.AlgebraicNotation{}.Decode(game.Position(), input)
-
-			// 2. Если не получилось, пробуем без символа взятия (Bf7)
-			if err != nil {
-				cleanInput := strings.ReplaceAll(input, "x", "")
-				move, err = chess.AlgebraicNotation{}.Decode(game.Position(), cleanInput)
-			}
-
-			// 3. Если все еще не получилось, пробуем координатный формат (e6f7)
-			if err != nil && len(input) == 4 {
-				move = findMoveByCoordinates(game, input[0:2], input[2:4])
-			}
-
-			if err != nil || move == nil {
-				fmt.Println("Неверный ход. Попробуйте еще раз.")
-				fmt.Println("Для взятия используйте: Bxf7 или Bf7")
-				continue
-			}
-
-			if err := game.Move(move); err != nil {
-				fmt.Println("Недопустимый ход:", err)
-				continue
-			}
-		} else {
-			fmt.Println("Бот думает...")
-			move := bot.BestMove(game)
-			if move == nil {
-				fmt.Println("Бот не может сделать ход!")
-				break
-			}
-
-			fmt.Printf("Бот сделал ход: %s\n", move.String())
-			game.Move(move)
-		}
-	}
-
-	printBoard(game)
-	fmt.Println("Игра завершена. Результат:", game.Outcome())
-	fmt.Println("PGN:", game.String())
-}
-
-// Функция для поиска хода по координатам (формат "e2e4")
-func findMoveByCoordinates(game *chess.Game, fromStr, toStr string) *chess.Move {
-	from, errFrom := parseSquare(fromStr)
-	to, errTo := parseSquare(toStr)
-
-	if errFrom != nil || errTo != nil {
 		return nil
 	}
 
-	for _, move := range game.ValidMoves() {
-		if move.S1() == from && move.S2() == to {
-			return move
+	if g.chessGame.Position().Turn() == g.playerColor && !g.botThinking {
+		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+			x, y := ebiten.CursorPosition()
+			x -= g.boardOffsetX
+			y -= g.boardOffsetY
+			if x >= 0 && x < squareSize*8 && y >= 0 && y < squareSize*8 {
+				file := x / squareSize
+				rank := 7 - y/squareSize
+				sq := chess.Square(file + rank*8)
+				piece := g.chessGame.Position().Board().Piece(sq)
+				if piece != chess.NoPiece && piece.Color() == g.playerColor {
+					g.selected = sq
+					g.dragging = &piece
+					g.dragX, g.dragY = x+g.boardOffsetX, y+g.boardOffsetY
+				}
+			}
+		}
+
+		if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) && g.dragging != nil {
+			x, y := ebiten.CursorPosition()
+			x -= g.boardOffsetX
+			y -= g.boardOffsetY
+			if x >= 0 && x < squareSize*8 && y >= 0 && y < squareSize*8 {
+				file := x / squareSize
+				rank := 7 - y/squareSize
+				target := chess.Square(file + rank*8)
+				move := findMove(g.chessGame, g.selected, target)
+				if move != nil {
+					g.chessGame.Move(move)
+					g.botThinking = true
+					go g.makeBotMove()
+				}
+			}
+			g.selected = 0
+			g.dragging = nil
 		}
 	}
 
 	return nil
 }
 
-// Парсинг координат шахматной клетки (например, "e4")
-func parseSquare(s string) (chess.Square, error) {
-	if len(s) != 2 {
-		return 0, fmt.Errorf("неверный формат клетки")
+func (g *Game) startGame() {
+	g.chessGame = chess.NewGame()
+	g.gameStarted = true
+	if g.playerColor == chess.Black {
+		g.botThinking = true
+		go g.makeBotMove()
+	}
+}
+
+func (g *Game) makeBotMove() {
+	moves := g.chessGame.ValidMoves()
+	if len(moves) > 0 {
+		g.chessGame.Move(moves[0])
+	}
+	g.botThinking = false
+}
+
+func findMove(game *chess.Game, from, to chess.Square) *chess.Move {
+	for _, m := range game.ValidMoves() {
+		if m.S1() == from && m.S2() == to {
+			return m
+		}
+	}
+	return nil
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+	if !g.gameStarted {
+		// Экран выбора цвета
+		ebitenutil.DebugPrintAt(screen, "Шахматы на Go", screenWidth/2-70, screenHeight/2-50)
+		ebitenutil.DebugPrintAt(screen, "Выберите цвет фигур:", screenWidth/2-100, screenHeight/2)
+
+		// Кнопка "Белые"
+		whiteBtn := ebiten.NewImage(200, 60)
+		whiteBtn.Fill(color.RGBA{200, 200, 200, 255})
+		ebitenutil.DebugPrintAt(whiteBtn, "Играть белыми", 50, 20)
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Translate(float64(screenWidth/2-200-20), float64(screenHeight/2+100))
+		screen.DrawImage(whiteBtn, op)
+
+		// Кнопка "Черные"
+		blackBtn := ebiten.NewImage(200, 60)
+		blackBtn.Fill(color.RGBA{50, 50, 50, 255})
+		ebitenutil.DebugPrintAt(blackBtn, "Играть черными", 50, 20)
+		op = &ebiten.DrawImageOptions{}
+		op.GeoM.Translate(float64(screenWidth/2+20), float64(screenHeight/2+100))
+		screen.DrawImage(blackBtn, op)
+		return
 	}
 
-	file := strings.ToLower(s[0:1])
-	if file < "a" || file > "h" {
-		return 0, fmt.Errorf("неверная буква клетки")
+	// Рисуем доску
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			clr := color.RGBA{240, 217, 181, 255} // светлые клетки
+			if (x+y)%2 == 1 {
+				clr = color.RGBA{181, 136, 99, 255} // темные клетки
+			}
+			rect := ebiten.NewImage(squareSize, squareSize)
+			rect.Fill(clr)
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Translate(float64(x*squareSize+g.boardOffsetX), float64(y*squareSize+g.boardOffsetY))
+			screen.DrawImage(rect, op)
+		}
 	}
 
-	rank := s[1:2]
-	if rank < "1" || rank > "8" {
-		return 0, fmt.Errorf("неверная цифра клетки")
+	// Рисуем фигуры
+	board := g.chessGame.Position().Board()
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			sq := chess.Square(x + (7-y)*8)
+			piece := board.Piece(sq)
+			if piece != chess.NoPiece && (g.dragging == nil || sq != g.selected) {
+				img := g.pieces[piece]
+				if img != nil {
+					op := &ebiten.DrawImageOptions{}
+					op.GeoM.Translate(
+						float64(x*squareSize+g.boardOffsetX),
+						float64(y*squareSize+g.boardOffsetY),
+					)
+					screen.DrawImage(img, op)
+				}
+			}
+		}
 	}
 
-	fileIndex := int(file[0] - 'a')
-	rankIndex := int(rank[0] - '1')
+	// Рисуем перетаскиваемую фигуру
+	if g.dragging != nil {
+		img := g.pieces[*g.dragging]
+		if img != nil {
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Translate(
+				float64(g.dragX)-float64(squareSize)/2,
+				float64(g.dragY)-float64(squareSize)/2,
+			)
+			screen.DrawImage(img, op)
+		}
+	}
 
-	return chess.Square(fileIndex + rankIndex*8), nil
+	// Статус игры
+	status := "Ваш ход"
+	if g.botThinking {
+		status = "Бот думает..."
+	} else if g.chessGame.Position().Turn() != g.playerColor {
+		status = "Ход бота"
+	}
+	ebitenutil.DebugPrintAt(screen, status, 20, 20)
+
+	// Информация о игре
+	outcome := g.chessGame.Outcome().String()
+	if outcome != "*" {
+		ebitenutil.DebugPrintAt(screen, "Результат: "+outcome, screenWidth/2-50, 20)
+	}
+}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	return screenWidth, screenHeight
+}
+
+func main() {
+	game := NewGame()
+	ebiten.SetWindowSize(screenWidth, screenHeight)
+	ebiten.SetWindowTitle("Шахматы на Go - Полноэкранный режим")
+	ebiten.SetWindowResizable(true)
+	if err := ebiten.RunGame(game); err != nil {
+		log.Fatal(err)
+	}
 }
