@@ -7,6 +7,8 @@ import (
 	"image"
 	"image/color"
 	"log"
+	"sync"
+	"time"
 
 	"chessGo/bots"
 
@@ -41,6 +43,7 @@ type Game struct {
 	boardOffsetY int
 	bots         map[string]bots.ChessBot
 	currentBot   bots.ChessBot
+	botMutex     sync.Mutex
 }
 
 type ChessBot interface {
@@ -62,20 +65,29 @@ func NewGame() *Game {
 	// Центрируем доску
 	boardWidth := squareSize * 8
 	g := &Game{
-		pieces:       make(map[chess.Piece]*ebiten.Image),
+		pieces:       make(map[chess.Piece]*ebiten.Image), // Инициализируем map
+		bots:         make(map[string]bots.ChessBot),
 		boardOffsetX: (screenWidth - boardWidth) / 2,
 		boardOffsetY: (screenHeight - boardHeight) / 2,
-		bots:         make(map[string]bots.ChessBot),
 	}
-	g.bots["random"] = bots.NewRandomBot()
 
-	g.currentBot = g.bots["random"] // Бот по умолчанию
+	// Инициализация ботов
+	g.bots["Newborn"] = bots.NewNewbornBot()
+	g.bots["minimax3"] = bots.NewMinimaxBot(3, 5*time.Second)
+	g.bots["minimax5"] = bots.NewMinimaxBot(5, 10*time.Second)
+
+	// Устанавливаем бота по умолчанию
+	g.currentBot = g.bots["Newborn"]
 
 	g.loadPieceImages()
 	return g
 }
 
 func (g *Game) loadPieceImages() {
+	if g.pieces == nil {
+		g.pieces = make(map[chess.Piece]*ebiten.Image)
+	}
+
 	pieceAssets := map[chess.Piece]string{
 		chess.WhiteKing:   "white_king.png",
 		chess.WhiteQueen:  "white_queen.png",
@@ -94,15 +106,16 @@ func (g *Game) loadPieceImages() {
 	for piece, filename := range pieceAssets {
 		data, err := assets.ReadFile("assets/" + filename)
 		if err != nil {
-			log.Fatalf("Failed to load image %s: %v", filename, err)
+			log.Printf("Warning: failed to load image %s: %v", filename, err)
+			continue
 		}
 
 		img, _, err := image.Decode(bytes.NewReader(data))
 		if err != nil {
-			log.Fatalf("Failed to decode image %s: %v", filename, err)
+			log.Printf("Warning: failed to decode image %s: %v", filename, err)
+			continue
 		}
 
-		// Масштабируем изображение под размер клетки
 		scaledImg := ebiten.NewImage(squareSize, squareSize)
 		op := &ebiten.DrawImageOptions{}
 		scale := float64(squareSize) / float64(pieceSize)
@@ -110,9 +123,36 @@ func (g *Game) loadPieceImages() {
 		scaledImg.DrawImage(ebiten.NewImageFromImage(img), op)
 		g.pieces[piece] = scaledImg
 	}
+
+	// Создаем fallback-изображения для отсутствующих фигур
+	createFallback := func(clr color.Color, symbol rune) *ebiten.Image {
+		img := ebiten.NewImage(squareSize, squareSize)
+		img.Fill(clr)
+		// Можно добавить символ фигуры
+		return img
+	}
+
+	// Проверяем, все ли фигуры загружены
+	requiredPieces := []chess.Piece{
+		chess.WhiteKing, chess.WhiteQueen, // ... все остальные фигуры ...
+	}
+
+	for _, piece := range requiredPieces {
+		if _, exists := g.pieces[piece]; !exists {
+			if piece.Color() == chess.White {
+				g.pieces[piece] = createFallback(color.White, 'K')
+			} else {
+				g.pieces[piece] = createFallback(color.Black, 'K')
+			}
+		}
+	}
 }
 
 func (g *Game) Update() error {
+	if g == nil {
+		return nil
+	}
+
 	if !g.gameStarted {
 		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 			x, y := ebiten.CursorPosition()
@@ -132,7 +172,7 @@ func (g *Game) Update() error {
 		}
 		return nil
 	}
-
+	// Обработка хода игрока
 	if g.chessGame.Position().Turn() == g.playerColor && !g.botThinking {
 		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 			x, y := ebiten.CursorPosition()
@@ -150,25 +190,53 @@ func (g *Game) Update() error {
 				}
 			}
 		}
+	}
 
-		if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) && g.dragging != nil {
-			x, y := ebiten.CursorPosition()
-			x -= g.boardOffsetX
-			y -= g.boardOffsetY
-			if x >= 0 && x < squareSize*8 && y >= 0 && y < squareSize*8 {
-				file := x / squareSize
-				rank := 7 - y/squareSize
-				target := chess.Square(file + rank*8)
-				move := findMove(g.chessGame, g.selected, target)
-				if move != nil {
-					g.chessGame.Move(move)
+	if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) && g.dragging != nil {
+		x, y := ebiten.CursorPosition()
+		x -= g.boardOffsetX
+		y -= g.boardOffsetY
+		if x >= 0 && x < squareSize*8 && y >= 0 && y < squareSize*8 {
+			file := x / squareSize
+			rank := 7 - y/squareSize
+			target := chess.Square(file + rank*8)
+			move := findMove(g.chessGame, g.selected, target)
+			if move != nil {
+				if err := g.chessGame.Move(move); err == nil {
 					g.botThinking = true
-					go g.makeBotMove()
+					go g.makeBotMove() // Запускаем ход бота
 				}
 			}
-			g.selected = 0
-			g.dragging = nil
 		}
+		g.selected = 0
+		g.dragging = nil
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyB) {
+		g.botMutex.Lock()
+		defer g.botMutex.Unlock()
+
+		// Простой цикл переключения между ботами
+		var names []string
+		for name := range g.bots {
+			names = append(names, name)
+		}
+
+		for i, name := range names {
+			if g.currentBot.Name() == g.bots[name].Name() {
+				next := (i + 1) % len(names)
+				g.currentBot = g.bots[names[next]]
+				break
+			}
+		}
+	}
+
+	if !g.botThinking && g.gameStarted && g.chessGame.Position().Turn() != g.playerColor {
+		g.botThinking = true
+		go func() {
+			time.Sleep(300 * time.Millisecond) // Небольшая задержка
+			g.makeBotMove()
+		}()
 	}
 
 	return nil
@@ -179,21 +247,38 @@ func (g *Game) startGame() {
 	g.gameStarted = true
 	if g.playerColor == chess.Black {
 		g.botThinking = true
-		go g.makeBotMove()
+		go func() {
+			time.Sleep(500 * time.Millisecond) // Небольшая задержка для плавности
+			g.makeBotMove()
+		}()
 	}
 }
 
 func (g *Game) makeBotMove() {
-	if g.currentBot != nil {
+	g.botMutex.Lock()
+	defer g.botMutex.Unlock()
+
+	if g.currentBot == nil || g.chessGame == nil {
+		g.botThinking = false
+		return
+	}
+
+	// Проверяем, должен ли бот ходить
+	if g.chessGame.Position().Turn() != g.playerColor && g.chessGame.Outcome() == chess.NoOutcome {
 		move := g.currentBot.BestMove(g.chessGame)
 		if move != nil {
-			g.chessGame.Move(move)
+			if err := g.chessGame.Move(move); err != nil {
+				log.Printf("Bot move error: %v", err)
+			}
 		}
 	}
 	g.botThinking = false
 }
 
 func findMove(game *chess.Game, from, to chess.Square) *chess.Move {
+	if game == nil {
+		return nil
+	}
 	for _, m := range game.ValidMoves() {
 		if m.S1() == from && m.S2() == to {
 			return m
@@ -202,7 +287,19 @@ func findMove(game *chess.Game, from, to chess.Square) *chess.Move {
 	return nil
 }
 
+func createBots() map[string]bots.ChessBot {
+	return map[string]bots.ChessBot{
+		"Newborn":  bots.NewNewbornBot(),
+		"minimax3": bots.NewMinimaxBot(3, 5*time.Second),
+		"minimax5": bots.NewMinimaxBot(5, 10*time.Second),
+	}
+}
+
 func (g *Game) Draw(screen *ebiten.Image) {
+	if g == nil || screen == nil {
+		return
+	}
+
 	// Отображение текущего бота
 	botInfo := fmt.Sprintf("Бот: %s", g.currentBot.Name())
 	ebitenutil.DebugPrintAt(screen, botInfo, screenWidth-200, 20)
@@ -212,7 +309,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		x, y := ebiten.CursorPosition()
 		if x > screenWidth-200 && x < screenWidth-20 && y > 20 && y < 50 {
 			// Циклически меняем ботов
-			botsList := []string{"random", "minimax3", "minimax5"}
+			botsList := []string{"Newborn", "minimax3", "minimax5"}
 			current := ""
 			for i, name := range botsList {
 				if g.currentBot.Name() == g.bots[name].Name() {
@@ -226,6 +323,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			g.currentBot = g.bots[current]
 		}
 	}
+
+	g.botMutex.Lock()
+	botName := "No bot selected"
+	if g.currentBot != nil {
+		botName = g.currentBot.Name()
+	}
+	g.botMutex.Unlock()
+
+	ebitenutil.DebugPrintAt(screen, "Current bot: "+botName, 20, screenHeight-40)
 
 	if !g.gameStarted {
 		// Экран выбора цвета
@@ -311,6 +417,10 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	outcome := g.chessGame.Outcome().String()
 	if outcome != "*" {
 		ebitenutil.DebugPrintAt(screen, "Результат: "+outcome, screenWidth/2-50, 20)
+	}
+
+	if g.botThinking {
+		ebitenutil.DebugPrintAt(screen, "Бот думает...", screenWidth/2-50, screenHeight-30)
 	}
 }
 
