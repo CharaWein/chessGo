@@ -6,6 +6,10 @@ import (
 	"github.com/notnil/chess"
 )
 
+type PositionEvaluator interface {
+	Evaluate(*chess.Game) float64
+}
+
 type DefaultEvaluator struct{}
 
 func (e DefaultEvaluator) Evaluate(game *chess.Game) float64 {
@@ -20,10 +24,11 @@ func (e DefaultEvaluator) Evaluate(game *chess.Game) float64 {
 		}
 	}
 
-	score := e.materialScore(game) * 10
-	score += e.pawnStructure(game) // Переименованный метод
-	score += e.pieceActivity(game) // Переименованный метод
-	score += e.kingSafety(game)    // Используем существующий метод
+	score := e.materialScore(game)*10 +
+		e.pawnStructure(game)*3 +
+		e.pieceActivity(game)*2 +
+		e.kingSafety(game)*5 +
+		e.centerControl(game)*1.5
 
 	if game.Position().Turn() == chess.Black {
 		score = -score
@@ -32,15 +37,31 @@ func (e DefaultEvaluator) Evaluate(game *chess.Game) float64 {
 	return score
 }
 
+func (e DefaultEvaluator) centerControl(game *chess.Game) float64 {
+	var score float64
+	center := []chess.Square{chess.D4, chess.E4, chess.D5, chess.E5}
+	board := game.Position().Board()
+
+	for _, sq := range center {
+		piece := board.Piece(sq)
+		if piece != chess.NoPiece {
+			if piece.Color() == game.Position().Turn() {
+				score += 0.5
+			} else {
+				score -= 0.5
+			}
+		}
+	}
+	return score
+}
+
 func (e DefaultEvaluator) pawnStructure(game *chess.Game) float64 {
 	var score float64
 	board := game.Position().Board()
 
-	// Бонус за связанные пешки
 	for sq := chess.A1; sq <= chess.H8; sq++ {
 		piece := board.Piece(sq)
 		if piece == chess.WhitePawn || piece == chess.BlackPawn {
-			// Проверяем наличие соседних пешек того же цвета
 			file := sq.File()
 			rank := sq.Rank()
 			for _, delta := range []int{-1, 1} {
@@ -49,7 +70,7 @@ func (e DefaultEvaluator) pawnStructure(game *chess.Game) float64 {
 					if board.Piece(neighbor) == piece {
 						score += 0.1
 						if piece.Color() == chess.Black {
-							score -= 0.2 // Учитываем цвет
+							score -= 0.2
 						}
 					}
 				}
@@ -64,17 +85,12 @@ func (e DefaultEvaluator) pieceActivity(game *chess.Game) float64 {
 	var score float64
 	validMoves := game.ValidMoves()
 
-	// Бонус за количество доступных ходов
 	score += float64(len(validMoves)) * 0.01
-
-	// Штраф за слонов одного цвета
-	// ... дополнительная реализация ...
 
 	return score
 }
 
 func (e DefaultEvaluator) materialScore(game *chess.Game) float64 {
-	// Веса фигур
 	values := map[chess.PieceType]float64{
 		chess.Pawn:   1,
 		chess.Knight: 3,
@@ -100,29 +116,7 @@ func (e DefaultEvaluator) materialScore(game *chess.Game) float64 {
 	return score
 }
 
-func (e DefaultEvaluator) positionalScore(game *chess.Game) float64 {
-	// Центральный контроль, активность фигур и т.д.
-	var score float64
-
-	// Пример: бонус за центральные клетки
-	centerSquares := []chess.Square{chess.E4, chess.D4, chess.E5, chess.D5}
-	for _, square := range centerSquares {
-		piece := game.Position().Board().Piece(square)
-		if piece != chess.NoPiece {
-			if piece.Color() == game.Position().Turn() {
-				score += 0.1
-			} else {
-				score -= 0.1
-			}
-		}
-	}
-
-	return score
-}
-
 func (e DefaultEvaluator) kingSafety(game *chess.Game) float64 {
-	// Оценка безопасности короля
 	var score float64
-	// ... реализация ...
 	return score
 }
