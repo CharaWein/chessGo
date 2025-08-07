@@ -68,10 +68,10 @@ func NewGame() *Game {
 func createBots() map[string]bots.ChessBot {
 	return map[string]bots.ChessBot{
 		"Newborn":      bots.NewNewbornBot(),
-		"Beginner":     bots.NewMinimaxBot(2, 2*time.Second, "Beginner"),
-		"Intermediate": bots.NewMinimaxBot(3, 5*time.Second, "Intermediate"),
-		"Advanced":     bots.NewMinimaxBot(4, 10*time.Second, "Advanced"),
-		"Expert":       bots.NewMinimaxBot(5, 15*time.Second, "Expert"),
+		"Beginner":     bots.NewMinimaxBot(2, 8*time.Second, "Beginner"),
+		"Intermediate": bots.NewMinimaxBot(3, 27*time.Second, "Intermediate"),
+		"Advanced":     bots.NewMinimaxBot(4, 64*time.Second, "Advanced"),
+		"Expert":       bots.NewMinimaxBot(5, 125*time.Second, "Expert"),
 	}
 }
 
