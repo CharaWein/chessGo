@@ -6,10 +6,6 @@ import (
 	"github.com/notnil/chess"
 )
 
-type PositionEvaluator interface {
-	Evaluate(*chess.Game) float64
-}
-
 type DefaultEvaluator struct{}
 
 func (e DefaultEvaluator) Evaluate(game *chess.Game) float64 {
@@ -24,16 +20,42 @@ func (e DefaultEvaluator) Evaluate(game *chess.Game) float64 {
 		}
 	}
 
-	score := e.materialScore(game)*10 +
-		e.pawnStructure(game)*3 +
-		e.pieceActivity(game)*2 +
-		e.kingSafety(game)*5 +
-		e.centerControl(game)*1.5
+	score := e.materialScore(game)*100 +
+		e.pawnStructure(game)*30 +
+		e.pieceActivity(game)*20 +
+		e.kingSafety(game)*50 +
+		e.centerControl(game)*15
 
 	if game.Position().Turn() == chess.Black {
 		score = -score
 	}
 
+	return score
+}
+
+func (e DefaultEvaluator) materialScore(game *chess.Game) float64 {
+	values := map[chess.PieceType]float64{
+		chess.Pawn:   1,
+		chess.Knight: 3,
+		chess.Bishop: 3.25,
+		chess.Rook:   5,
+		chess.Queen:  9,
+		chess.King:   100,
+	}
+
+	var score float64
+	board := game.Position().Board()
+	for sq := chess.A1; sq <= chess.H8; sq++ {
+		piece := board.Piece(sq)
+		if piece != chess.NoPiece {
+			value := values[piece.Type()]
+			if piece.Color() == chess.White {
+				score += value
+			} else {
+				score -= value
+			}
+		}
+	}
 	return score
 }
 
@@ -87,32 +109,6 @@ func (e DefaultEvaluator) pieceActivity(game *chess.Game) float64 {
 
 	score += float64(len(validMoves)) * 0.01
 
-	return score
-}
-
-func (e DefaultEvaluator) materialScore(game *chess.Game) float64 {
-	values := map[chess.PieceType]float64{
-		chess.Pawn:   1,
-		chess.Knight: 3,
-		chess.Bishop: 3.25,
-		chess.Rook:   5,
-		chess.Queen:  9,
-		chess.King:   100,
-	}
-
-	var score float64
-	board := game.Position().Board()
-	for square := chess.A1; square <= chess.H8; square++ {
-		piece := board.Piece(square)
-		if piece != chess.NoPiece {
-			value := values[piece.Type()]
-			if piece.Color() == game.Position().Turn() {
-				score += value
-			} else {
-				score -= value
-			}
-		}
-	}
 	return score
 }
 

@@ -249,9 +249,9 @@ func (g *Game) startGame() {
 func (g *Game) makeBotMove() {
 	g.botMutex.RLock()
 	defer g.botMutex.RUnlock()
+	defer func() { g.botThinking = false }()
 
 	if g.currentBot == nil || g.chessGame == nil || g.chessGame.Outcome() != chess.NoOutcome {
-		g.botThinking = false
 		return
 	}
 

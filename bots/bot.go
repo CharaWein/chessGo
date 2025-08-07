@@ -1,3 +1,4 @@
+// bot.go
 package bots
 
 import "github.com/notnil/chess"
@@ -6,4 +7,9 @@ import "github.com/notnil/chess"
 type ChessBot interface {
 	BestMove(game *chess.Game) *chess.Move
 	Name() string
+}
+
+// PositionEvaluator defines the interface for position evaluation
+type PositionEvaluator interface {
+	Evaluate(game *chess.Game) float64
 }
