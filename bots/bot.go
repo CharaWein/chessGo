@@ -12,4 +12,7 @@ type ChessBot interface {
 // PositionEvaluator defines the interface for position evaluation
 type PositionEvaluator interface {
 	Evaluate(game *chess.Game) float64
+	pieceValue(p chess.PieceType) float64
+	isSquareAttacked(sq chess.Square, byColor chess.Color, game *chess.Game) bool
+	isSquareDefended(sq chess.Square, byColor chess.Color, game *chess.Game) bool
 }

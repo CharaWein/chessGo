@@ -10,77 +10,80 @@ import (
 type DefaultEvaluator struct{}
 
 const (
-	MaterialWeight      = 100
+	MaterialWeight = 2000 // Главный приоритет
+	ThreatWeight   = 1500 // Угрозы/защиты почти равны материалу
+	// Все позиционные факторы минимальны
 	MobilityWeight      = 1
-	PawnStructWeight    = 30
-	KingSafetyWeight    = 50
-	CenterWeight        = 20
-	PieceActivityWeight = 15
+	PawnStructWeight    = 1
+	KingSafetyWeight    = 5
+	CenterWeight        = 1
+	PieceActivityWeight = 1
 )
+
+func (e DefaultEvaluator) pieceValue(p chess.PieceType) float64 {
+	switch p {
+	case chess.Pawn:
+		return 1
+	case chess.Knight:
+		return 3.05
+	case chess.Bishop:
+		return 3.33
+	case chess.Rook:
+		return 5.63
+	case chess.Queen:
+		return 9.5
+	case chess.King:
+		return 100
+	default:
+		return 0
+	}
+}
 
 func (e DefaultEvaluator) Evaluate(game *chess.Game) float64 {
 	if outcome := game.Outcome(); outcome != chess.NoOutcome {
 		switch outcome {
 		case chess.WhiteWon:
-			return math.MaxFloat64
+			return math.MaxFloat64 / 2
 		case chess.BlackWon:
-			return -math.MaxFloat64
+			return -math.MaxFloat64 / 2
 		default:
 			return 0
 		}
 	}
 
-	score := e.materialScore(game)*MaterialWeight +
-		e.mobilityScore(game)*MobilityWeight +
+	material := e.materialScore(game)
+	threats := e.threatsScore(game)
+
+	// Основная оценка (больше влияния)
+	score := material*MaterialWeight + threats*ThreatWeight
+
+	// Второстепенные факторы (меньше влияния)
+	minorFactors := e.mobilityScore(game)*MobilityWeight +
 		e.pawnStructure(game)*PawnStructWeight +
 		e.kingSafety(game)*KingSafetyWeight +
 		e.centerControl(game)*CenterWeight +
 		e.pieceActivity(game)*PieceActivityWeight
 
-	if game.Position().Turn() == chess.Black {
-		score = -score
-	}
-
-	// Логирование (можно убрать после отладки)
-	fmt.Printf("Оценка позиции: %.2f (Материал: %.2f, Угрозы: %.2f)\n",
-		score,
-		e.materialScore(game)*100,
-		e.threatsScore(game)*50)
+	score += minorFactors * 0.02
 
 	if game.Position().Turn() == chess.Black {
 		score = -score
 	}
+
+	fmt.Printf("Оценка: %.2f (Материал: %.2f Угрозы: %.2f Факторы: %.2f)\n",
+		score, material, threats, minorFactors)
+
 	return score
 }
 
 func (e DefaultEvaluator) materialScore(game *chess.Game) float64 {
-	values := map[chess.PieceType]float64{
-		chess.Pawn:   1,
-		chess.Knight: 3,
-		chess.Bishop: 3,
-		chess.Rook:   5,
-		chess.Queen:  9,
-		chess.King:   1000,
-	}
-
 	var score float64
 	board := game.Position().Board()
 
-	// Бонус за сохранение фигур
-	pieceCount := 0
-	for sq := chess.A1; sq <= chess.H8; sq++ {
-		piece := board.Piece(sq)
-		if piece != chess.NoPiece && piece.Type() != chess.Pawn && piece.Type() != chess.King {
-			pieceCount++
-		}
-	}
-	score += float64(pieceCount) * 0.05 // Бонус за каждую сохраненную фигуру
-
-	// Основная оценка материала
 	for sq := chess.A1; sq <= chess.H8; sq++ {
 		piece := board.Piece(sq)
 		if piece != chess.NoPiece {
-			value := values[piece.Type()]
+			value := e.pieceValue(piece.Type())
 			if piece.Color() == chess.White {
 				score += value
 			} else {
@@ -94,42 +97,76 @@ func (e DefaultEvaluator) materialScore(game *chess.Game) float64 {
 func (e DefaultEvaluator) threatsScore(game *chess.Game) float64 {
 	var score float64
 	board := game.Position().Board()
+	turn := game.Position().Turn()
+	opponent := turn.Other()
 
-	// Проверяем все возможные взятия
+	// 1. Жесткий штраф за каждую атакованную фигуру
+	for sq := chess.A1; sq <= chess.H8; sq++ {
+		piece := board.Piece(sq)
+		if piece != chess.NoPiece && piece.Color() == turn {
+			if e.isSquareAttacked(sq, opponent, game) {
+				pieceVal := e.pieceValue(piece.Type())
+
+				if !e.isSquareDefended(sq, turn, game) {
+					// Критический штраф за незащищенную фигуру под боем
+					score -= pieceVal * 3.0 // В 3 раза больше ценности фигуры!
+
+					// Дополнительный штраф если это не пешка
+					if piece.Type() != chess.Pawn {
+						score -= 2.0
+					}
+				} else {
+					// Штраф даже за защищенную фигуру
+					score -= pieceVal * 0.5
+				}
+			}
+		}
+	}
+
+	// 2. Супер-бонусы за взятия
 	for _, move := range game.ValidMoves() {
 		if move.HasTag(chess.Capture) {
 			captured := board.Piece(move.S2())
-			attacker := board.Piece(move.S1())
+			capturer := board.Piece(move.S1())
+			capturedVal := e.pieceValue(captured.Type())
 
-			// Бонус за взятие более ценной фигуры
-			if e.pieceValue(captured.Type()) > e.pieceValue(attacker.Type()) {
-				score += 0.5
+			// Базовый бонус
+			attackBonus := capturedVal * 1.2
+
+			if !e.isSquareDefended(move.S2(), opponent, game) {
+				// Огромный бонус за взятие незащищенной фигуры
+				attackBonus += 5.0
+			} else if e.pieceValue(capturer.Type()) < capturedVal {
+				// Бонус за выгодный размен
+				attackBonus += (capturedVal - e.pieceValue(capturer.Type())) * 0.8
 			}
-			// Штраф за отдачу более ценной фигуры
-			if e.pieceValue(attacker.Type()) > e.pieceValue(captured.Type()) {
-				score -= 1.0
-			}
+
+			score += attackBonus
 		}
 	}
 
 	return score
 }
 
-func (e DefaultEvaluator) pieceValue(piece chess.PieceType) float64 {
-	switch piece {
-	case chess.Pawn:
-		return 1
-	case chess.Knight:
-		return 3
-	case chess.Bishop:
-		return 3
-	case chess.Rook:
-		return 5
-	case chess.Queen:
-		return 9
-	default:
-		return 0
+func (e DefaultEvaluator) isSquareDefended(sq chess.Square, byColor chess.Color, game *chess.Game) bool {
+	for _, move := range game.ValidMoves() {
+		if move.S2() == sq && game.Position().Board().Piece(move.S1()).Color() == byColor {
+			// Не учитываем короля как защитника
+			if game.Position().Board().Piece(move.S1()).Type() != chess.King {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+func (e DefaultEvaluator) isSquareAttacked(sq chess.Square, byColor chess.Color, game *chess.Game) bool {
+	for _, move := range game.ValidMoves() {
+		if move.S2() == sq && game.Position().Board().Piece(move.S1()).Color() == byColor {
+			return true
+		}
+	}
+	return false
 }
 
 func (e DefaultEvaluator) centerControl(game *chess.Game) float64 {
@@ -170,15 +207,6 @@ func (e DefaultEvaluator) squareControl(sq chess.Square, board *chess.Board, gam
 	}
 
 	return score
-}
-
-func (e DefaultEvaluator) isSquareAttacked(sq chess.Square, byColor chess.Color, game *chess.Game) bool {
-	for _, move := range game.ValidMoves() {
-		if move.S2() == sq && game.Position().Board().Piece(move.S1()).Color() == byColor {
-			return true
-		}
-	}
-	return false
 }
 
 func (e DefaultEvaluator) mobilityScore(game *chess.Game) float64 {
